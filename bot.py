@@ -4,9 +4,11 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
+# Cargar token de .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# Carpeta de descargas
 DOWNLOADS_DIR = "downloads"
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
@@ -17,39 +19,48 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Por favor envíame un enlace válido 😅")
         return
 
-    await update.message.reply_text("Descargando... ⏳ Esto puede tardar según el tamaño de la playlist.")
+    await update.message.reply_text("Procesando enlace... ⏳")
 
-    # Hook que se llama cada vez que un video termina de descargarse
-    async def progress_hook(d):
-        if d['status'] == 'finished':
-            filename = d['filename']
-            title = d.get('title', 'Video')
-
-            await update.message.reply_text(f"Subiendo a Telegram: {title} 📤")
-
-            # Subir video
-            with open(filename, 'rb') as f:
-                await update.message.reply_video(video=f, caption=title)
-
-            # Borrar archivo
-            os.remove(filename)
-
-    # yt-dlp no soporta async hooks directamente, hacemos workaround con wrapper
-    def sync_hook(d):
-        import asyncio
-        asyncio.create_task(progress_hook(d))
-
+    # Configuración de yt-dlp
     ydl_opts = {
         "outtmpl": os.path.join(DOWNLOADS_DIR, "%(title)s.%(ext)s"),
         "format": "mp4/bestaudio/best",
         "quiet": True,
-        "progress_hooks": [sync_hook],
+        "noplaylist": False,  # queremos que detecte playlists
+        "max_filesize": 1500*1024*1024,  # 1.5 GB max
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])  # descarga toda la playlist
-        await update.message.reply_text("¡Todos los videos procesados! ✅")
+            # Extraer info sin descargar
+            info = ydl.extract_info(url, download=False)
+
+            # Obtener lista de videos (playlist o single video)
+            videos = info.get("entries", [info])
+
+            await update.message.reply_text(f"Encontré {len(videos)} video(s). Empezando descarga...")
+
+            for i, video in enumerate(videos, start=1):
+                title = video.get("title", "Video")
+                video_url = video.get("webpage_url")
+
+                await update.message.reply_text(f"Descargando video {i}/{len(videos)}: {title} ⏳")
+
+                # Descargar solo este video
+                ydl.download([video_url])
+                filename = ydl.prepare_filename(video)
+
+                await update.message.reply_text(f"Subiendo a Telegram: {title} 📤")
+
+                # Subir video
+                with open(filename, "rb") as f:
+                    await update.message.reply_video(video=f, caption=title)
+
+                # Borrar archivo para liberar espacio
+                os.remove(filename)
+
+            await update.message.reply_text("✅ Todos los videos procesados y subidos.")
+
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
