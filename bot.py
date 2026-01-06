@@ -13,38 +13,54 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
 
-    # validar que sea un link
     if not url.startswith("http"):
         await update.message.reply_text("Por favor envíame un enlace válido 😅")
         return
 
-    await update.message.reply_text("Descargando el video... ⏳")
+    await update.message.reply_text("Descargando... ⏳ Esto puede tardar según el tamaño de la playlist.")
 
-    # ruta de salida
-    output_path = os.path.join(DOWNLOADS_DIR, "%(title)s.%(ext)s")
+    # Hook que se llama cada vez que un video termina de descargarse
+    async def progress_hook(d):
+        if d['status'] == 'finished':
+            filename = d['filename']
+            title = d.get('title', 'Video')
+
+            await update.message.reply_text(f"Subiendo a Telegram: {title} 📤")
+
+            # Subir video
+            with open(filename, 'rb') as f:
+                await update.message.reply_video(video=f, caption=title)
+
+            # Borrar archivo
+            os.remove(filename)
+
+    # yt-dlp no soporta async hooks directamente, hacemos workaround con wrapper
+    def sync_hook(d):
+        import asyncio
+        asyncio.create_task(progress_hook(d))
 
     ydl_opts = {
-        "outtmpl": output_path,
+        "outtmpl": os.path.join(DOWNLOADS_DIR, "%(title)s.%(ext)s"),
         "format": "mp4/bestaudio/best",
         "quiet": True,
+        "progress_hooks": [sync_hook],
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-
-        await update.message.reply_text("Subiendo el archivo a Telegram... 📤")
-
-        await update.message.reply_video(video=open(filename, "rb"), caption=info.get("title", "Video"))
-
-        os.remove(filename)
-
+            ydl.download([url])  # descarga toda la playlist
+        await update.message.reply_text("¡Todos los videos procesados! ✅")
     except Exception as e:
         await update.message.reply_text(f"Error: {e}")
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "¡Hola! Envíame un enlace de YouTube o playlist y lo descargaré y subiré a Telegram."
+    )
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.COMMAND, start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("🤖 Bot corriendo...")
     app.run_polling()
